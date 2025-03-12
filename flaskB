@@ -1,0 +1,63 @@
+from flask import Flask, request, jsonify
+import openai
+import fitz  # PyMuPDF
+from newspaper import Article
+from serpapi import GoogleSearch
+
+app = Flask(__name__)
+
+# Set up your OpenAI and SerpAPI keys
+OPENAI_API_KEY = "your-api-key"
+SERP_API_KEY = "your-serpapi-key"
+openai.api_key = OPENAI_API_KEY
+
+def search_google(query):
+    """Fetch search results using SerpAPI."""
+    params = {"engine": "google", "q": query, "api_key": SERP_API_KEY}
+    search = GoogleSearch(params)
+    results = search.get_dict()
+    return [result['link'] for result in results.get('organic_results', [])[:3]]
+
+def extract_text_from_url(url):
+    """Extracts text from a URL."""
+    try:
+        article = Article(url)
+        article.download()
+        article.parse()
+        return article.text[:2000]  # Limit text size for processing
+    except:
+        return ""
+
+def query_llm(claim, evidence):
+    """Ask LLM to fact-check the claim."""
+    prompt = f"""
+    Claim: "{claim}"
+    Evidence:
+    {evidence}
+    
+    Evaluate this claim based on the evidence and provide a truthfulness score (0-100), plus an explanation.
+    """
+    response = openai.ChatCompletion.create(
+        model="gpt-4-turbo",
+        messages=[{"role": "system", "content": "You are a fact-checking assistant."},
+                  {"role": "user", "content": prompt}],
+        api_key=OPENAI_API_KEY
+    )
+    return response["choices"][0]["message"]["content"]
+
+@app.route('/factcheck', methods=['POST'])
+def factcheck():
+    claim = request.json['claim']
+    sources = search_google(claim)
+    extracted_texts = [extract_text_from_url(url) for url in sources]
+    combined_evidence = "\n\n".join(extracted_texts[:2])  # Use top 2 sources
+
+    if not combined_evidence:
+        return jsonify({"result": "No reliable sources found.", "sources": []})
+
+    result = query_llm(claim, combined_evidence)
+    
+    return jsonify({"result": result, "sources": sources})
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
